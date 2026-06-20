@@ -15,7 +15,10 @@ def parse_fix_message(line: str) -> dict:
     message = message.rstrip("$\n").strip()
 
     fields = {}
-    for pair in message.split("\x01"):
+    # Support both the real SOH byte (0x01) and the two-char literal "^A"
+    # that some text editors write when displaying/saving FIX files.
+    raw = message.replace("^A", "\x01")
+    for pair in raw.split("\x01"):
         if "=" in pair:
             tag, _, value = pair.partition("=")
             fields[tag.strip()] = value.strip()
@@ -59,15 +62,22 @@ def load_fix_messages(input_fix_file: str) -> tuple[dict, list]:
 
 
 def build_csv_rows(orders: dict, fills: list) -> list[dict]:
-    """Match fills to their originating orders and build output rows."""
+    """Match fills to their originating orders and build output rows.
+
+    If no matching NewOrderSingle is found (execution-only logs), the fill
+    itself carries all required fields (tag 44 = LimitPrice, tag 60 =
+    TransactTime), so we fall back to those values.
+    """
     rows = []
 
     for fill in fills:
         clord_id = fill.get("11")
-        if not clord_id or clord_id not in orders:
+        if not clord_id:
             continue
 
-        order = orders[clord_id]
+        # Use the matching order when available; otherwise fall back to the
+        # fill itself (execution-only FIX logs don't include NewOrderSingle).
+        order = orders.get(clord_id, fill)
 
         rows.append(
             {
